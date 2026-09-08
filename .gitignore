@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+ruw/
+privaat/
+_cj.txt
+_body.txt
+_maak_motor.py
+_fix_nl.py

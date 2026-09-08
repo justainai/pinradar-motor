@@ -1,0 +1,109 @@
+name: Oogstronde
+
+# Een lange ronde in EEN job, in plaats van losse crons per hoek. Reden: geplande
+# runs kunnen uren in de wachtrij hangen (gemeten 08-09: vijf crons kwamen pas
+# 5 uur later langs). Een job mag 6 uur duren, dus een lus die de hoeken afloopt
+# is voorspelbaarder dan twaalf afspraken die niet worden nagekomen.
+#
+# Alleen 'schedule' en 'workflow_dispatch'. NOOIT pull_request_target of
+# workflow_run erbij zetten: die geven secrets door aan code van buiten.
+
+on:
+  schedule:
+    - cron: "7 6 * * 1-5"      # 08:07 NL in de zomertijd
+  workflow_dispatch:
+    inputs:
+      minuten:
+        description: "Tijdbudget per hoek in minuten"
+        required: false
+        default: "25"
+      rondes:
+        description: "Hoeveel hoeken maximaal"
+        required: false
+        default: "12"
+      totaal:
+        description: "Harde bovengrens voor de hele lus, in minuten"
+        required: false
+        default: "300"
+
+concurrency:
+  group: oogstronde            # nooit twee rondes tegelijk: dat geeft 429's
+  cancel-in-progress: false
+
+permissions:
+  contents: read               # deze repo wordt niet geschreven
+
+jobs:
+  ronde:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330       # ruim onder de 6-uursgrens van een job
+    steps:
+      - name: Motor ophalen
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Werkmap ophalen
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PRIVE_REPO }}
+          token: ${{ secrets.PRIVE_TOKEN }}
+          path: privaat
+
+      - name: Ronde draaien
+        env:
+          CONFIG: privaat/config/hoeken.json
+          RUWDIR: privaat/ruw
+          GEZIEN: privaat/gezien.json
+          MINUTEN: ${{ github.event.inputs.minuten || '25' }}
+          RONDES: ${{ github.event.inputs.rondes || '12' }}
+          TOTAAL: ${{ github.event.inputs.totaal || '300' }}
+        run: |
+          git -C privaat config user.name "oogst-bot"
+          git -C privaat config user.email "actions@github.com"
+          START=$(date +%s)
+          for i in $(seq 1 "$RONDES"); do
+            VERSTREKEN=$(( ($(date +%s) - START) / 60 ))
+            if [ "$VERSTREKEN" -ge "$TOTAAL" ]; then
+              echo "tijdbudget van ${TOTAAL} min op na ${i} rondes"
+              break
+            fi
+            echo "--- ronde $i (${VERSTREKEN} min verstreken)"
+            set +e
+            python motor.py
+            CODE=$?
+            set -e
+            if [ "$CODE" -eq 3 ]; then
+              echo "alle hoeken van vandaag zijn gedaan"
+              break
+            fi
+            if [ "$CODE" -ne 0 ]; then
+              echo "motor gaf exitcode $CODE, door naar de volgende hoek"
+            fi
+            # Oordelen gebeurt in de prive-repo. Faalt dat, dan blijft de ruwe
+            # oogst staan en kan het later alsnog.
+            python privaat/oordeel.py > /dev/null || echo "oordeel.py gaf een fout"
+            # Na ELKE hoek wegschrijven: valt de run om, dan is alleen de hoek
+            # van dat moment kwijt en niet de hele dag.
+            git -C privaat add -A
+            if git -C privaat diff --staged --quiet; then
+              echo "niets nieuws om weg te schrijven"
+            else
+              git -C privaat commit -q -m "Oogst $(date -u '+%Y-%m-%d %H:%M') UTC"
+              git -C privaat pull -q --rebase
+              git -C privaat push -q
+              echo "weggeschreven"
+            fi
+          done
+
+      - name: Samenvatting
+        if: always()
+        run: |
+          # Met opzet alleen tellingen. De logs van een publieke repo zijn voor
+          # iedereen leesbaar, dus hier staat nooit wat er gevonden is.
+          echo "## Ronde $(date -u +%Y-%m-%d)" >> $GITHUB_STEP_SUMMARY
+          N=$(ls privaat/ruw/$(date -u +%Y-%m-%d)_*.json 2>/dev/null | wc -l)
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Hoeken afgerond vandaag: **${N}**" >> $GITHUB_STEP_SUMMARY
