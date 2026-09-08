@@ -25,6 +25,10 @@ on:
         description: "Harde bovengrens voor de hele lus, in minuten"
         required: false
         default: "300"
+      paginas:
+        description: "Zoekpaginas per term"
+        required: false
+        default: "10"
 
 concurrency:
   group: oogstronde            # nooit twee rondes tegelijk: dat geeft 429's
@@ -58,6 +62,11 @@ jobs:
           RUWDIR: privaat/ruw
           GEZIEN: privaat/gezien.json
           MINUTEN: ${{ github.event.inputs.minuten || '25' }}
+          # 10 paginas per term. Meer termen is beter dan meer paginas -- een
+          # verse term opent nieuw terrein, een extra pagina graaft dieper in
+          # hetzelfde gat -- maar allebei helpt. Zakt de opbrengst van pagina 7
+          # tot 10 weg, zet dit dan terug naar 6.
+          PAGINAS: ${{ github.event.inputs.paginas || '10' }}
           RONDES: ${{ github.event.inputs.rondes || '12' }}
           TOTAAL: ${{ github.event.inputs.totaal || '300' }}
         run: |
