@@ -19,6 +19,7 @@ Technische aantekeningen, gemeten tegen de API:
 import io, json, os, re, subprocess, sys, time, random, html, urllib.parse
 from collections import deque, defaultdict
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -53,6 +54,10 @@ except Exception as e:
     raise SystemExit(2)
 VOLGORDE = CFG.get("volgorde") or sorted(HOEKEN)
 LAT_C = int(CFG.get("ruislat", 150))
+# Versheidslat: hoe oud mag de NIEUWSTE pin van een product zijn? 0 = uit.
+# Gemeten 09-09 op Justins eigen ja-lijst: een lat van 30 dagen kostte 2 van zijn
+# 4 ja's, 120 dagen kost er 1 (en die viel toch om op de marge). Vandaar 120.
+MAX_DAGEN = int(CFG.get("max_pin_dagen", 0))
 
 AFF = ("amazon.", "amzn.", "a.co", "instagram.com", "tiktok.com", "temu.", "shein.",
        "aliexpress", "shopee", "etsy.com", "youtube.com", "pinterest.", "facebook.com",
@@ -183,6 +188,24 @@ def klik(pin_id, csrf, app):
     return [x for x in res if isinstance(x, dict) and x.get("type") == "pin"]
 
 
+def pin_dagen(s):
+    """Hoeveel dagen geleden is deze pin geplaatst? None als de datum ontbreekt of
+    onleesbaar is -- en dan telt hij NIET als te oud: een ontbrekende meting is geen
+    meting, en daar gooien we niets op weg."""
+    if not s:
+        return None
+    for ontleed in (parsedate_to_datetime,
+                    lambda x: datetime.fromisoformat(x.replace("Z", "+00:00"))):
+        try:
+            d = ontleed(s)
+            if d.tzinfo is None:
+                d = d.replace(tzinfo=timezone.utc)
+            return max((datetime.now(timezone.utc) - d).days, 0)
+        except Exception:
+            pass
+    return None
+
+
 def winkelpin(p):
     l = p.get("link") or ""
     if not re.search(r"/products?/[^/?#]", l):
@@ -309,8 +332,21 @@ def main():
         # exitcode 3 = niets meer te doen; de lus in de workflow stopt daarop.
         return 3
     vandaag = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    termen = HOEKEN[hoek][:]
+    # Uit de pot van deze hoek een VERSE selectie trekken, elke dag een stuk
+    # verderop. Dezelfde termen elke dag herhalen graaft hetzelfde gat dieper uit:
+    # gemeten 08->09-09 gaf 2,5x zoveel pins maar maar 1,5x zoveel kandidaten, en
+    # een steeds oudere staart. Een verse term opent een nieuw stuk Pinterest.
+    pot = HOEKEN[hoek][:]
+    n_per_dag = int(CFG.get("termen_per_ronde", 11))
+    if len(pot) > n_per_dag:
+        # Draaipunt uit de datum, niet willekeurig: twee runs op dezelfde dag
+        # pakken dezelfde termen, en over de dagen heen loopt hij de pot rond.
+        offset = (datetime.now(timezone.utc).toordinal() * n_per_dag) % len(pot)
+        termen = [pot[(offset + i) % len(pot)] for i in range(n_per_dag)]
+    else:
+        termen = pot
     log("# Pinronde %s — hoek: %s (budget %d min)" % (vandaag, hoek, MINUTEN))
+    log("termen: %d van de %d uit de pot" % (len(termen), len(pot)))
 
     csrf, app, n = bootstrap(termen[0])
     log("bootstrap: html=%d bytes, csrf=%s, appVersion=%s"
@@ -342,9 +378,13 @@ def main():
                 if p["id"] not in alles:
                     alles[p["id"]] = bewaar(p, 0, "zoekterm", t)
                     nieuw_totaal += 1
-            if pg == 0:
-                for p in z[:4]:
-                    rij.appendleft((p["id"], 1, "zaad", t))
+                    # Zaai met wat BEWEZEN naar een winkel wijst, niet met de eerste
+                    # vier zoekresultaten. Die vier zijn juist de pins die de
+                    # zoekfase toch al binnenhaalt; hun omgeving is dus het minst
+                    # nieuw. Een pin die naar een echte productpagina linkt staat
+                    # per definitie in het stuk feed waar wij naartoe willen.
+                    if winkelpin(p):
+                        rij.append((p["id"], 1, "zaad", t))
             if not bm:
                 break
             time.sleep(0.7)
@@ -352,6 +392,15 @@ def main():
         time.sleep(0.6)
     log("zoekfase: %d pins" % len(alles))
     na_zoeken = len(alles)
+    if not rij:
+        # Geen enkele winkelpin gevonden: dan maar zaaien met wat er is, anders
+        # slaat de doorklikfase helemaal over.
+        for pid in list(alles)[:8]:
+            rij.append((pid, 1, "zaad-terugval", ""))
+        log("geen winkelpins om mee te zaaien — teruggevallen op %d gewone pins"
+            % len(rij))
+    else:
+        log("zaad voor het doorklikken: %d winkelpins" % len(rij))
 
     # ---- fase 2: doorklikken zolang het iets oplevert
     kliks = 0
@@ -437,6 +486,7 @@ def main():
     if al_gezien:
         log("ontdubbelen tegen %d eerder geoogste producten" % len(al_gezien))
     overgeslagen = 0
+    te_oud = 0
     kand = []
     for (dom, handle), pins in op_volgorde:
         if "%s/%s" % (dom, handle) in al_gezien:
@@ -459,6 +509,16 @@ def main():
         saves = max(waardes)
         if saves < LAT_C:
             continue
+        # Versheidslat. Saves stapelen zich op zolang een pin bestaat, dus een oude
+        # pin komt op TOTAAL vanzelf bovendrijven zonder dat er iets leeft: gemeten
+        # 09-09 stond een pin van 1165 dagen op de derde plek. Meet de NIEUWSTE pin
+        # van het product, niet de best scorende -- een oud product met een verse
+        # pin is precies wat we zoeken, andersom niet.
+        jongste = min((pin_dagen(p.get("created_at")) for p in pins
+                       if pin_dagen(p.get("created_at")) is not None), default=None)
+        if MAX_DAGEN and jongste is not None and jongste > MAX_DAGEN:
+            te_oud += 1
+            continue
         beste = max(pins, key=lambda p: gemeten.get(p["pin_id"], 0))
         code, eind, leeft = winkel_leeft(beste["link"])
         time.sleep(0.8)
@@ -480,6 +540,9 @@ def main():
 
     if overgeslagen:
         log("%d producten overgeslagen: die stonden al in de eerdere oogst" % overgeslagen)
+    if te_oud:
+        log("%d producten afgevallen op de versheidslat (nieuwste pin ouder dan "
+            "%d dagen)" % (te_oud, MAX_DAGEN))
     log("boven de ruislat (>=%d saves): %d nieuwe producten" % (LAT_C, len(kand)))
     schrijf(hoek, vandaag, kand)
     return 0
