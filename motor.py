@@ -355,12 +355,22 @@ def main():
 
     # ---- fase 2: doorklikken zolang het iets oplevert
     kliks = 0
+    # Twee TELLERS, geen een. 'terug' is wat de feed opstuurde, 'nieuw' is wat
+    # daarvan nog niet in de oogst zat. Wie alleen 'nieuw' meet kan een lege feed
+    # niet onderscheiden van een feed die niets toevoegt -- en die twee vragen om
+    # een tegenovergestelde oplossing (ander IP versus ander zaad).
+    terug = 0
+    lege_feeds = 0
     while rij and not tijd_op() and kliks < 90:
         pid, diepte, via, term = rij.popleft()
         if pid in gezien or diepte > 3:
             continue
         gezien.add(pid)
-        for k in klik(pid, csrf, app):
+        uit_feed = klik(pid, csrf, app)
+        terug += len(uit_feed)
+        if not uit_feed:
+            lege_feeds += 1
+        for k in uit_feed:
             if k["id"] not in alles:
                 alles[k["id"]] = bewaar(k, diepte, pid, term)
             if diepte < 3 and k["id"] not in gezien:
@@ -369,15 +379,22 @@ def main():
                 elif random.random() < 0.2:
                     rij.append((k["id"], diepte + 1, pid, term))
         kliks += 1
-        # Levert doorklikken hier niets op (datacenter-IP), stop er dan mee in plaats
-        # van de tijd op te maken aan lege calls.
+        # Levert doorklikken hier niets op, stop er dan mee in plaats van de tijd
+        # op te maken aan kansloze calls -- maar zeg er WEL bij welke van de twee
+        # oorzaken het is, anders staat er een conclusie in het log die nooit is
+        # gemeten.
         if kliks == 8 and len(alles) == na_zoeken:
-            log("doorklikken geeft 0 nieuwe pins na 8 kliks -- deze machine krijgt geen "
-                "related-feed. Gestopt met klikken, de zoekoogst blijft staan.")
+            if terug == 0:
+                log("doorklikken: 8 kliks, de feed stuurde 0 pins terug -- deze machine "
+                    "krijgt geen related-feed. Gestopt met klikken.")
+            else:
+                log("doorklikken: 8 kliks, de feed stuurde %d pins terug maar ALLE was al "
+                    "geoogst -- de feed werkt hier wel, het zaad is te bekend. Gestopt."
+                    % terug)
             break
         time.sleep(0.45 + random.random() * 0.4)
-    log("doorklikfase: %d kliks, %d pins erbij (totaal %d)"
-        % (kliks, len(alles) - na_zoeken, len(alles)))
+    log("doorklikfase: %d kliks, feed gaf %d pins terug (%d leeg), %d nieuw (totaal %d)"
+        % (kliks, terug, lege_feeds, len(alles) - na_zoeken, len(alles)))
     if post_fouten:
         log("post-antwoorden die geen JSON waren (eerste %d):" % len(post_fouten))
         for f in post_fouten:
