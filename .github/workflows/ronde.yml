@@ -10,7 +10,21 @@ name: Oogstronde
 
 on:
   schedule:
-    - cron: "7 6 * * 1-5"      # 08:07 NL in de zomertijd
+    # VIER afspraken, niet een. Gemeten over vier runs: een druk-op-de-knop start
+    # binnen seconden, maar de enige geplande run kwam 5 uur en 1 minuut te laat
+    # (06:07 gepland, 11:08 aangemaakt) -- dezelfde vertraging als de vijf crons
+    # van 08-09. GitHub geeft geplande runs op een gratis repo lage prioriteit en
+    # kan ze bij drukte ook helemaal overslaan.
+    #
+    # Meer afspraken is hier gratis en veilig: de concurrency-group laat er nooit
+    # twee tegelijk lopen, en een tweede run die alsnog langskomt vindt alle
+    # hoeken van die dag al gedaan en stopt binnen een minuut op exitcode 3
+    # (bewezen: run 4 op 09-09 duurde 0 minuten). Welke afspraak als eerste door
+    # de wachtrij komt, doet het werk.
+    - cron: "7 1 * * 1-5"      # 03:07 NL — vroegste kans
+    - cron: "7 3 * * 1-5"      # 05:07 NL
+    - cron: "7 5 * * 1-5"      # 07:07 NL
+    - cron: "7 6 * * 1-5"      # 08:07 NL — de oorspronkelijke
   workflow_dispatch:
     inputs:
       minuten:
