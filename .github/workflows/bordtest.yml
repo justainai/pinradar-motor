@@ -1,0 +1,49 @@
+name: Bordproef
+
+# Eenmalige proef: geeft de widget-API vanaf een datacenter-IP borden en hun
+# pins terug? Start vanzelf bij een push van de proef zelf, of met de knop.
+# Alleen push en workflow_dispatch -- NOOIT pull_request_target of workflow_run.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - bordtest.py
+      - .github/workflows/bordtest.yml
+  workflow_dispatch:
+
+concurrency:
+  group: bordproef
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  proef:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Werkmap ophalen
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PRIVE_REPO }}
+          token: ${{ secrets.PRIVE_TOKEN }}
+          path: privaat
+
+      - name: Proef draaien
+        env:
+          PRIVAAT: privaat
+          BORDEN: "40"
+        run: python3 bordtest.py
+
+      - name: Uitslag wegschrijven
+        run: |
+          git -C privaat config user.name "oogst-bot"
+          git -C privaat config user.email "actions@github.com"
+          git -C privaat add uitvoer/bordtest.json
+          git -C privaat commit -q -m "Bordproef $(date -u '+%Y-%m-%d %H:%M') UTC"
+          git -C privaat pull -q --rebase
+          git -C privaat push -q
