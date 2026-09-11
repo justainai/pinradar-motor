@@ -21,10 +21,13 @@ on:
     # hoeken van die dag al gedaan en stopt binnen een minuut op exitcode 3
     # (bewezen: run 4 op 09-09 duurde 0 minuten). Welke afspraak als eerste door
     # de wachtrij komt, doet het werk.
-    - cron: "7 1 * * 1-5"      # 03:07 NL — vroegste kans
-    - cron: "7 3 * * 1-5"      # 05:07 NL
-    - cron: "7 5 * * 1-5"      # 07:07 NL
-    - cron: "7 6 * * 1-5"      # 08:07 NL — de oorspronkelijke
+    #
+    # Elke dag, ook in het weekend: sinds de bordfase (11-09) is de oogst niet
+    # meer na een dag op, dus een weekend overslaan kost twee dagen vondsten.
+    - cron: "7 1 * * *"        # 03:07 NL — vroegste kans
+    - cron: "7 3 * * *"        # 05:07 NL
+    - cron: "7 5 * * *"        # 07:07 NL
+    - cron: "7 6 * * *"        # 08:07 NL — de oorspronkelijke
   workflow_dispatch:
     inputs:
       minuten:

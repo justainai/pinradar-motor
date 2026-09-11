@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Pinterest-oogstmotor. Haalt publieke pins op en meet ze, zonder browser.
 
-Keten: bootstrap -> zoeken -> doorklikken -> pins groeperen op product ->
+Keten: bootstrap -> zoeken -> doorklikken -> borden -> pins groeperen op product ->
 saves meten -> winkel bereikbaar? -> productdata -> ruwe uitvoer als JSON.
 
 Deze motor oordeelt niet en kiest niet. Welke hoeken en welke termen hij afgaat
@@ -15,6 +15,11 @@ Technische aantekeningen, gemeten tegen de API:
   - een winkel is dicht als de EIND-URL op /password of /opening-soon eindigt;
     bodytekst is geen betrouwbaar signaal.
   - herseeden tijdens klikken: de related-feed volgt de kijker, niet het onderwerp.
+  - de widget-API (pidgets) werkt WEL vanaf een datacenter-IP. Die geeft per pin
+    het bord, en per bord 50 pins met de saves erbij: doorklikken via borden.
+    Bewezen op GitHub 11-09: 40 borden, 414 productpins, 69 nieuwe >=150 saves,
+    tegen 8 uit de hele zoekronde van die ochtend.
+  - bordpins hebben geen datum; de pinpagina wel, als "createdAt".
 """
 import io, json, os, re, subprocess, sys, time, random, html, urllib.parse
 from collections import deque, defaultdict
@@ -58,6 +63,11 @@ LAT_C = int(CFG.get("ruislat", 150))
 # Gemeten 09-09 op Justins eigen ja-lijst: een lat van 30 dagen kostte 2 van zijn
 # 4 ja's, 120 dagen kost er 1 (en die viel toch om op de marge). Vandaar 120.
 MAX_DAGEN = int(CFG.get("max_pin_dagen", 0))
+# Bordfase: tot welk deel van het hoekbudget mag hij borden aflopen? 0 = uit.
+# De rest van de tijd is voor het meten van wat hij vond.
+BORD_TOT = float(CFG.get("bordfase_tot", 0))
+KLIKS_MAX = int(os.environ.get("KLIKS", "90"))
+W = "https://widgets.pinterest.com/v3/pidgets"
 
 AFF = ("amazon.", "amzn.", "a.co", "instagram.com", "tiktok.com", "temu.", "shein.",
        "aliexpress", "shopee", "etsy.com", "youtube.com", "pinterest.", "facebook.com",
@@ -252,6 +262,96 @@ def saves_pagina(pin_id):
     return int(m.group(1)) if m else None
 
 
+def datum_pagina(pin_id):
+    """Bordpins hebben geen datum; de pinpagina wel, als "createdAt"."""
+    h = curl(["https://nl.pinterest.com/pin/%s/" % pin_id])
+    m = re.search(r'"createdAt"\s*:\s*"([^"]+)"', h)
+    return m.group(1) if m else None
+
+
+# ---------------------------------------------------------------- borden
+def pidget(url):
+    """Widget-API. Geeft (http-code, json); een lege of kapotte body is {}."""
+    out = curl(["-w", "\n@@HTTP:%{http_code}", url])
+    romp, _, code = out.rpartition("\n@@HTTP:")
+    try:
+        return code.strip(), json.loads(romp)
+    except Exception:
+        return code.strip(), {}
+
+
+def bordfase(alles, vandaag):
+    """Doorklikken via borden. Zaad: de pins uit het zoeken, winkelpins voorop.
+    Per blok van 40 zaadpins: op welke borden staan ze, en dan die borden aflopen.
+    De winkelpins van de borden gaan in `alles`; hun saves komen mee terug, zodat
+    ze niet opnieuw gemeten hoeven te worden.
+
+    Borden die vandaag al in een eerdere hoek zijn afgelopen staan in
+    <datum>_borden.txt en worden overgeslagen."""
+    grens = MINUTEN * 60 * BORD_TOT
+    pad = os.path.join(UITVOER, "%s_borden.txt" % vandaag)
+    try:
+        al = set(open(pad, encoding="utf-8").read().split())
+    except Exception:
+        al = set()
+    zaad = ([pid for pid, p in alles.items() if winkelpin(p)]
+            + [pid for pid, p in alles.items() if not winkelpin(p)])
+    zaad = [z for z in zaad if re.fullmatch(r"\d{6,25}", str(z))]
+    codes = defaultdict(int)
+    vooraf, bekeken, fout_op_rij, pauzes, stop = {}, 0, 0, 0, False
+    voor = len(alles)
+    for i in range(0, len(zaad), 40):
+        if stop or time.time() - START > grens:
+            break
+        c, d = pidget(W + "/pins/info/?pin_ids=" + ",".join(zaad[i:i + 40]))
+        codes["info " + c] += 1
+        borden = []
+        for p in d.get("data") or []:
+            u = ((p or {}).get("board") or {}).get("url")
+            if u and u not in al:
+                al.add(u)
+                borden.append(u)
+        time.sleep(0.6)
+        for u in borden:
+            if time.time() - START > grens:
+                break
+            c, d = pidget(W + "/boards" + u.rstrip("/") + "/pins/")
+            codes["bord " + c] += 1
+            pins = (d.get("data") or {}).get("pins") or []
+            if c != "200" or not pins:
+                # Vijf keer op rij niets: even wachten. Blijft het zo, dan stoppen
+                # in plaats van de hoektijd op te maken aan een dichte deur.
+                fout_op_rij += 1
+                if fout_op_rij >= 5:
+                    pauzes += 1
+                    if pauzes > 3:
+                        log("bordfase: steeds geen antwoord -- gestopt")
+                        stop = True
+                        break
+                    time.sleep(60)
+                    fout_op_rij = 0
+                continue
+            fout_op_rij = 0
+            bekeken += 1
+            for p in pins:
+                if not winkelpin(p) or p.get("id") in alles:
+                    continue
+                if not (p.get("title") or p.get("grid_title")):
+                    p = dict(p, title=(p.get("description") or "")[:120])
+                alles[p["id"]] = bewaar(p, 1, "bord", u)
+                st = (p.get("aggregated_pin_data") or {}).get("aggregated_stats") or {}
+                if st.get("saves") is not None:
+                    vooraf[str(p["id"])] = int(st["saves"])
+            time.sleep(0.6)
+    try:
+        open(pad, "w", encoding="utf-8").write("\n".join(sorted(al)))
+    except Exception:
+        pass
+    log("bordfase: %d zaadpins, %d borden bekeken, %d winkelpins erbij, http %s"
+        % (len(zaad), bekeken, len(alles) - voor, dict(codes)))
+    return vooraf
+
+
 # ---------------------------------------------------------------- winkel
 def winkel_leeft(url):
     """Alleen de EIND-URL telt. 'notify me when available' is standaard Shopify-tekst
@@ -410,7 +510,7 @@ def main():
     # een tegenovergestelde oplossing (ander IP versus ander zaad).
     terug = 0
     lege_feeds = 0
-    while rij and not tijd_op() and kliks < 90:
+    while rij and not tijd_op() and kliks < KLIKS_MAX:
         pid, diepte, via, term = rij.popleft()
         if pid in gezien or diepte > 3:
             continue
@@ -452,6 +552,9 @@ def main():
         log("LET OP: de kliks leverden vrijwel niets op. Zoeken werkte wel, dus dit "
             "is geen uitspraak over de markt maar over deze machine.")
 
+    # ---- fase 3: doorklikken via borden, met de tijd die overblijft
+    vooraf = bordfase(alles, vandaag) if BORD_TOT > 0 else {}
+
     # ---- groepeer op product (domein + handle), niet op pin en niet op zoekterm
     producten = defaultdict(list)
     for p in alles.values():
@@ -472,9 +575,11 @@ def main():
     # ---- saves per product (som over de eigen pins is fout: aggregated telt al
     #      het hele beeld, dus we nemen het HOOGSTE gemeten getal van de pins)
     numeriek = [p["pin_id"] for v in producten.values() for p in v
-                if not p["gesponsord"]]
+                if not p["gesponsord"] and str(p["pin_id"]) not in vooraf]
     gemeten = saves_pidgets(numeriek)
-    log("saves via pidgets: %d van %d numerieke pins" % (len(gemeten), len(numeriek)))
+    log("saves via pidgets: %d van %d numerieke pins (+%d al gemeten op het bord)"
+        % (len(gemeten), len(numeriek), len(vooraf)))
+    gemeten.update(vooraf)
 
     # Meet de producten met de MEESTE eigen pins eerst: herhaald signaal binnen een
     # bron slaat elk los cijfer, en als de tijd opraakt wil je die eerst gehad hebben.
@@ -487,6 +592,7 @@ def main():
         log("ontdubbelen tegen %d eerder geoogste producten" % len(al_gezien))
     overgeslagen = 0
     te_oud = 0
+    datums = [0, 0]
     kand = []
     for (dom, handle), pins in op_volgorde:
         if "%s/%s" % (dom, handle) in al_gezien:
@@ -514,6 +620,13 @@ def main():
         # 09-09 stond een pin van 1165 dagen op de derde plek. Meet de NIEUWSTE pin
         # van het product, niet de best scorende -- een oud product met een verse
         # pin is precies wat we zoeken, andersom niet.
+        if MAX_DAGEN and all(pin_dagen(p.get("created_at")) is None for p in pins):
+            # Bordpins hebben geen datum. Haal hem van de pinpagina van de best
+            # scorende pin; lukt dat niet, dan gooien we niets weg.
+            b = max(pins, key=lambda p: gemeten.get(p["pin_id"], 0))
+            b["created_at"] = datum_pagina(b["pin_id"])
+            datums[0 if b["created_at"] else 1] += 1
+            time.sleep(0.5)
         jongste = min((pin_dagen(p.get("created_at")) for p in pins
                        if pin_dagen(p.get("created_at")) is not None), default=None)
         if MAX_DAGEN and jongste is not None and jongste > MAX_DAGEN:
@@ -532,6 +645,9 @@ def main():
                "gesponsord": any(p["gesponsord"] for p in pins),
                "titel_pin": beste["titel"], "beschrijving_pin": beste["beschrijving"],
                "created_at": beste.get("created_at"),
+               "gevonden_via": ("zoeken" if any(p["via"] == "zoekterm" for p in pins)
+                                else "bord" if any(p["via"] == "bord" for p in pins)
+                                else "doorklikken"),
                "http": code, "eind_url": eind, "winkel_leeft": leeft}
         if leeft:
             rec.update(productdata(dom, handle, beste["link"]))
@@ -540,6 +656,8 @@ def main():
 
     if overgeslagen:
         log("%d producten overgeslagen: die stonden al in de eerdere oogst" % overgeslagen)
+    if datums[0] or datums[1]:
+        log("datum van de pinpagina gehaald: %d gelukt, %d niet" % tuple(datums))
     if te_oud:
         log("%d producten afgevallen op de versheidslat (nieuwste pin ouder dan "
             "%d dagen)" % (te_oud, MAX_DAGEN))
