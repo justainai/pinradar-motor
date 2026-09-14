@@ -73,6 +73,11 @@ jobs:
           token: ${{ secrets.PRIVE_TOKEN }}
           path: privaat
 
+      # Beeldbibliotheken voor de nabewerking in de werkmap. Mislukt dit, dan
+      # draait de ronde gewoon door; de nabewerking slaat die stap dan over.
+      - name: Hulpbibliotheken
+        run: pip install -q pillow numpy || echo "installatie mislukt"
+
       - name: Ronde draaien
         env:
           CONFIG: privaat/config/hoeken.json
