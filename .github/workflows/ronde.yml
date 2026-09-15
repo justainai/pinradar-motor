@@ -33,7 +33,7 @@ on:
       minuten:
         description: "Tijdbudget per hoek in minuten"
         required: false
-        default: "25"
+        default: "35"
       rondes:
         description: "Hoeveel hoeken maximaal"
         required: false
@@ -83,7 +83,7 @@ jobs:
           CONFIG: privaat/config/hoeken.json
           RUWDIR: privaat/ruw
           GEZIEN: privaat/gezien.json
-          MINUTEN: ${{ github.event.inputs.minuten || '25' }}
+          MINUTEN: ${{ github.event.inputs.minuten || '35' }}
           # 10 paginas per term. Meer termen is beter dan meer paginas -- een
           # verse term opent nieuw terrein, een extra pagina graaft dieper in
           # hetzelfde gat -- maar allebei helpt. Zakt de opbrengst van pagina 7
