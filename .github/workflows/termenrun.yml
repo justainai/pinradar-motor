@@ -1,0 +1,88 @@
+name: Termenrun
+
+# Elke ochtend nieuwe dropship-winkels zoeken in de Meta Ads Library, met
+# dezelfde opzet als de Oogstronde: code hier (publiek), oogst naar de prive-
+# werkmap, in het publieke log alleen tellingen.
+#
+# De Adsproef van 22-09 bewees dat het kan: kale curl krijgt 403 met botcheck,
+# Playwright headless komt er wel door. Drie zoektermen waarvan het antwoord
+# vooraf bekend was gaven 15/39/208 tegen 15/38/206 vanaf de eigen pc.
+# Deze runner heeft bovendien een ander IP dan Justins laptop, dus de zoekrem
+# van de twee loopt apart.
+#
+# Alleen schedule en workflow_dispatch. NOOIT pull_request_target of
+# workflow_run erbij: die geven secrets door aan code van buiten.
+
+on:
+  schedule:
+    # Na de Oogstronde, zodat de twee niet om dezelfde runner vechten en de
+    # prive-repo niet twee pushes tegelijk krijgt. Vier kansen, net als de
+    # Oogstronde: geplande runs op een gratis repo krijgen lage prioriteit en
+    # kwamen 08-09 vijf uur te laat. De concurrency-group laat er nooit twee
+    # tegelijk lopen, en een tweede run die alsnog langskomt vindt elke term
+    # nog in zijn rustperiode en doet dus vrijwel niets.
+    - cron: "40 6 * * *"        # 08:40 NL
+    - cron: "40 7 * * *"        # 09:40 NL
+    - cron: "40 8 * * *"        # 10:40 NL
+    - cron: "40 9 * * *"        # 11:40 NL
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "Hoeveel calls (de rem sloeg 21-09 toe na ~47)"
+        required: false
+        default: "40"
+      cooldown:
+        description: "Dagen rust voor een term-land-paar"
+        required: false
+        default: "7"
+
+concurrency:
+  group: termenrun
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Werkmap ophalen
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PRIVE_REPO }}
+          token: ${{ secrets.PRIVE_TOKEN }}
+          path: privaat
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Browser installeren
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Termenrun draaien
+        env:
+          PRIVAAT: privaat
+          BUDGET: ${{ github.event.inputs.budget || '40' }}
+          COOLDOWN: ${{ github.event.inputs.cooldown || '7' }}
+        run: python3 termenrun.py
+
+      - name: Oogst wegschrijven
+        if: always()
+        run: |
+          git -C privaat config user.name "oogst-bot"
+          git -C privaat config user.email "actions@github.com"
+          git -C privaat add ads/ || true
+          if git -C privaat diff --staged --quiet; then
+            echo "Niets nieuws om te committen."
+          else
+            git -C privaat commit -q -m "Termenrun $(date -u '+%Y-%m-%d %H:%M') UTC"
+            git -C privaat pull -q --rebase
+            git -C privaat push -q
+          fi
