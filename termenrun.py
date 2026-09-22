@@ -56,11 +56,10 @@ COOLDOWN = int(os.environ.get("COOLDOWN", "7"))
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
 
-# Een land per markt: NL dekt Belgie, DE dekt Oostenrijk. Een tweede land kost
-# een hele call en geeft grotendeels dezelfde winkels.
-HOOFDLAND = {"NL": "NL", "DE": "DE", "FR": "FR", "US": "US", "UK": "GB",
-             "CA": "CA", "AU": "AU", "ES": "ES", "IT": "IT", "PL": "PL",
-             "SE": "SE", "DK": "DK"}
+# Een land per markt: het eerste uit de markt-regel in de termenbank. NL dekt
+# Belgie, DE dekt Oostenrijk -- een tweede land kost een hele call en geeft
+# grotendeels dezelfde winkels. De bank is hier de enige waarheid; een markt
+# erbij zetten hoeft dus niet in deze code.
 
 HAAL = """
 async (a) => {
@@ -117,6 +116,39 @@ def domein_van(a):
     return d
 
 
+def afwisselend(termen, offset=0):
+    """Herschik een rij termen tot een beurtrol over de soorten.
+
+    In de bank staan de termen per soort gegroepeerd. Die volgorde overnemen
+    betekent dat een run begint met alleen bundels en korting, en dat de
+    ergernis- en advertorialtermen pas aan bod komen als het budget al op is --
+    terwijl juist die soorten een andere groep winkels opleveren.
+
+    De offset zorgt dat niet elke markt bij dezelfde soort begint. Met 19
+    markten en 40 calls krijgt een markt maar twee beurten; beginnen ze
+    allemaal bij 'bundel', dan bestaat de hele run uit bundels en korting.
+    Door elke markt een plek verderop te laten starten, en elke dag weer een
+    plek op te schuiven, komen alle soorten aan bod -- binnen een run over de
+    markten heen, en over de dagen heen binnen een markt.
+    """
+    per_soort = {}
+    for t in termen:
+        per_soort.setdefault(t["soort"], []).append(t)
+    volgorde = sorted(per_soort)
+    if volgorde:
+        k = offset % len(volgorde)
+        volgorde = volgorde[k:] + volgorde[:k]
+    uit = []
+    while per_soort:
+        for soort in volgorde:
+            if soort not in per_soort:
+                continue
+            uit.append(per_soort[soort].pop(0))
+            if not per_soort[soort]:
+                del per_soort[soort]
+    return uit
+
+
 def kies(bank, gesch, budget, cooldown):
     """Round-robin over de markten; per markt eerst wat eerder werkte, dan wat
     we nog nooit probeerden."""
@@ -154,24 +186,42 @@ def kies(bank, gesch, budget, cooldown):
         # (pages/news 18 actieve ads). Nooit vooraan.
         return None
 
+    # Elke markt begint bij een andere soort, en elke dag schuift dat op.
+    dag = nu.toordinal()
     rijen = []
-    for m in bank["markten"]:
-        if m not in HOOFDLAND:
+    for marktnr, (m, cfg) in enumerate(bank["markten"].items()):
+        landen = cfg.get("landen") or []
+        if not landen:
             continue
-        land = HOOFDLAND[m]
-        taal = bank["markten"][m]["taal"]
+        land = landen[0]
+        taal = cfg["taal"]
         kand = [t for t in per_taal.get(taal, []) + per_taal.get("*", [])
                 if rust(t["q"], land)]
         beproefd = sorted([t for t in kand if score(t["q"], land, t["taal"]) is not None],
                           key=lambda t: -score(t["q"], land, t["taal"]))
         # URL-termen achteraan in de ontdek-rij: goedkoop te proberen, maar ze
         # mogen nooit een taal-term verdringen.
-        onbeproefd = [t for t in kand if score(t["q"], land, t["taal"]) is None
-                      and t["taal"] != "*"]
+        onbeproefd = afwisselend([t for t in kand if score(t["q"], land, t["taal"]) is None
+                                  and t["taal"] != "*"], marktnr + dag)
         onbeproefd += [t for t in kand if score(t["q"], land, t["taal"]) is None
                        and t["taal"] == "*"]
         rijen.append((m, land, beproefd, onbeproefd))
 
+    # Rotatie over de SOORTEN. Zonder dit kiest elke run binnen een markt de
+    # best scorende term, en dat is telkens hetzelfde soort aanbod -- dan komen
+    # er elke dag dezelfde aanbiedingsmachines uit. Kortingstaal en
+    # ergernistaal trekken een andere groep winkels aan, dus binnen een markt
+    # pakken we nooit twee keer achter elkaar hetzelfde soort zolang er iets
+    # anders te kiezen valt.
+    def pak(bron, vorige_soort):
+        if not bron:
+            return None
+        for i, t in enumerate(bron):
+            if t["soort"] != vorige_soort:
+                return bron.pop(i)
+        return bron.pop(0)
+
+    laatste_soort = {}
     plan, ronde = [], 0
     while len(plan) < budget:
         gaf_iets = False
@@ -180,12 +230,11 @@ def kies(bank, gesch, budget, cooldown):
                 break
             # 60/40: op twee van elke vijf beurten pakken we iets onbeproefds
             uit_nieuw = (ronde % 5) in (2, 4)
-            bron = onbeproefd if uit_nieuw and onbeproefd else beproefd
-            if not bron:
-                bron = onbeproefd or beproefd
-            if not bron:
+            eerst, dan = (onbeproefd, beproefd) if uit_nieuw else (beproefd, onbeproefd)
+            t = pak(eerst, laatste_soort.get(m)) or pak(dan, laatste_soort.get(m))
+            if not t:
                 continue
-            t = bron.pop(0)
+            laatste_soort[m] = t["soort"]
             plan.append({"markt": m, "land": land, "q": t["q"], "soort": t["soort"]})
             gaf_iets = True
         ronde += 1

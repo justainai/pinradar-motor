@@ -73,6 +73,13 @@ jobs:
           COOLDOWN: ${{ github.event.inputs.cooldown || '7' }}
         run: python3 termenrun.py
 
+      - name: Winkels schiften (kost geen Meta-budget)
+        if: always()
+        env:
+          PRIVAAT: privaat
+          MAX: "400"
+        run: python3 winkelschift.py
+
       - name: Oogst wegschrijven
         if: always()
         run: |
