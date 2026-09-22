@@ -491,6 +491,21 @@ def main():
         log("  zoek '%s': %d nieuw over %d pagina's" % (t, nieuw_totaal, pg + 1))
         time.sleep(0.6)
     log("zoekfase: %d pins" % len(alles))
+    # Zaad voor de doorklikfase die op een eigen pc draait: de related-feed is
+    # vanaf een datacenter-IP leeg. Alleen de ids van de winkelpins uit het
+    # zoeken, geen zoektermen. Doorklikken vanaf deze pins blijft bij het
+    # onderwerp; vanaf de bordproducten drijft het af naar mode (gemeten 22-09).
+    # BEWUST .txt en geen .json: oordeel.py en kies_hoek() lezen elk
+    # <datum>_*.json in de uitvoermap als een hoek. Niet omzetten naar json.
+    # Een fout hier mag de ronde nooit stoppen.
+    try:
+        zaad_ids = [str(pid) for pid, p in alles.items() if winkelpin(p)]
+        with io.open(os.path.join(UITVOER, "%s_%s_zaad.txt" % (vandaag, hoek)),
+                     "w", encoding="utf-8") as f:
+            f.write(chr(10).join(zaad_ids) + chr(10))
+        log("zaad voor lokaal doorklikken: %d ids" % len(zaad_ids))
+    except Exception as e:
+        log("zaad niet weggeschreven (%s)" % type(e).__name__)
     na_zoeken = len(alles)
     if not rij:
         # Geen enkele winkelpin gevonden: dan maar zaaien met wat er is, anders
