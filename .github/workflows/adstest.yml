@@ -1,0 +1,64 @@
+name: Adsproef
+
+# Eenmalige proef: geeft de Meta Ads Library antwoord vanaf een datacenter-IP?
+# Zelfde opzet als de Bordproef: code publiek, uitslag naar de prive-werkmap,
+# in het publieke log alleen tellingen en HTTP-codes.
+#
+# Alleen push en workflow_dispatch -- NOOIT pull_request_target of workflow_run.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - adstest.py
+      - .github/workflows/adstest.yml
+  workflow_dispatch:
+
+concurrency:
+  group: adsproef
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  proef:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Werkmap ophalen
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PRIVE_REPO }}
+          token: ${{ secrets.PRIVE_TOKEN }}
+          path: privaat
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Browser installeren
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Proef draaien
+        env:
+          PRIVAAT: privaat
+        run: python3 adstest.py
+
+      - name: Uitslag wegschrijven
+        if: always()
+        run: |
+          git -C privaat config user.name "oogst-bot"
+          git -C privaat config user.email "actions@github.com"
+          git -C privaat add uitvoer/adstest.json || true
+          if git -C privaat diff --staged --quiet; then
+            echo "Niets weggeschreven."
+          else
+            git -C privaat commit -q -m "Adsproef $(date -u '+%Y-%m-%d %H:%M') UTC"
+            git -C privaat pull -q --rebase
+            git -C privaat push -q
+          fi
