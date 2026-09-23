@@ -67,6 +67,13 @@ MAX_DAGEN = int(CFG.get("max_pin_dagen", 0))
 # De rest van de tijd is voor het meten van wat hij vond.
 BORD_TOT = float(CFG.get("bordfase_tot", 0))
 KLIKS_MAX = int(os.environ.get("KLIKS", "90"))
+# Vergelijkfase (23-09): "Meer zoals dit" per productpin (RelatedModulesResource).
+# Werkt WEL vanaf een datacenter-IP, anders dan RelatedPinFeedResource (gemeten
+# 23-09: 24 verzoeken gaven op de runner 146 winkelpins, de related-feed 0).
+# Zaad: de productpins van een bord uit de config plus de winkelpins uit het
+# zoeken. Aan/uit, bord, filter en budget staan allemaal in de config; zonder
+# "aan": true doet de motor precies wat hij voor 23-09 deed.
+VERGELIJK = CFG.get("vergelijkfase") or {}
 W = "https://widgets.pinterest.com/v3/pidgets"
 
 AFF = ("amazon.", "amzn.", "a.co", "instagram.com", "tiktok.com", "temu.", "shein.",
@@ -196,6 +203,129 @@ def klik(pin_id, csrf, app):
     da = (d.get("resource_response") or {}).get("data")
     res = da if isinstance(da, list) else ((da or {}).get("results") or [])
     return [x for x in res if isinstance(x, dict) and x.get("type") == "pin"]
+
+
+def vergelijk(pin_id, csrf, app):
+    """'Meer zoals dit' onder een pin. Geeft de pins terug, of [] bij geen antwoord."""
+    o = {"pin_id": pin_id, "context_pin_ids": [], "search_query": "",
+         "source": "deep_linking", "top_level_source": "deep_linking",
+         "top_level_source_depth": 1, "is_pdp": False}
+    body = urllib.parse.urlencode({"source_url": "/pin/%s/" % pin_id,
+                                   "data": json.dumps({"options": o, "context": {}})})
+    d = post("RelatedModulesResource", body,
+             "https://nl.pinterest.com/pin/%s/" % pin_id, csrf, app)
+    da = (d.get("resource_response") or {}).get("data")
+    res = da if isinstance(da, list) else ((da or {}).get("results") or [])
+    return [x for x in res if isinstance(x, dict) and x.get("type") == "pin"]
+
+
+def bordpins(src, bid, csrf, app):
+    """Alle pins van een bord, via een GET op BoardFeedResource (een POST geeft 403,
+    gemeten 23-09). Valt terug op de widget (alleen de nieuwste pins)."""
+    alles, bm = {}, None
+    for _ in range(40):
+        o = {"board_id": bid, "board_url": src, "currentFilter": -1,
+             "field_set_key": "react_grid_pin", "filter_section_pins": True,
+             "sort": "default", "layout": "default", "page_size": 25,
+             "redux_normalize_feed": True}
+        if bm:
+            o["bookmarks"] = [bm]
+        q = urllib.parse.urlencode({"source_url": src,
+                                    "data": json.dumps({"options": o, "context": {}})})
+        out = curl(["-b", COOKIE, "--compressed",
+                    "https://nl.pinterest.com/resource/BoardFeedResource/get/?" + q,
+                    "-H", "x-app-version: " + (app or ""), "-H", "x-csrftoken: " + (csrf or ""),
+                    "-H", "x-pinterest-appstate: active", "-H", "x-requested-with: XMLHttpRequest",
+                    "-H", "x-pinterest-source-url: " + src,
+                    "-H", "x-pinterest-pws-handler: www/[username]/[slug].js",
+                    "-H", "referer: https://nl.pinterest.com" + src])
+        try:
+            r = json.loads(out).get("resource_response") or {}
+        except Exception:
+            break
+        pins = [x for x in (r.get("data") or []) if isinstance(x, dict) and x.get("type") == "pin"]
+        for p in pins:
+            alles[p["id"]] = p
+        bm = r.get("bookmark")
+        if not pins or not bm or bm == "-end-":
+            break
+        time.sleep(0.5)
+    bron = "feed"
+    if not alles:
+        bron = "widget"
+        c, d = pidget(W + "/boards" + src.rstrip("/") + "/pins/")
+        for p in ((d.get("data") or {}).get("pins") or []):
+            alles[p["id"]] = p
+    return list(alles.values()), bron
+
+
+def vergelijkfase(alles, csrf, app, hoek):
+    """Zo zoekt Justin zelf: bij een product 'Meer zoals dit', en alleen verder op
+    wat er dropship uitziet. Alleen winkelpins die door het filter komen gaan de
+    oogst in EN worden het zaad voor de volgende laag; zo drijft hij niet af naar
+    cadeaus en maskers (gemeten 23-09: laag 2 zonder filter dwaalde af)."""
+    grens = MINUTEN * 60 * float(VERGELIJK.get("tot", 0.5))
+    max_verz = int(VERGELIJK.get("max_verzoeken", 80))
+    lagen = int(VERGELIJK.get("lagen", 3))
+    niet = re.compile(VERGELIJK["niet"], re.I) if VERGELIJK.get("niet") else None
+
+    def goed(p):
+        if not winkelpin(p):
+            return False
+        t = " ".join([p.get("grid_title") or p.get("title") or "",
+                      (p.get("description") or "")[:200], p.get("link") or ""])
+        return not (niet and niet.search(t))
+
+    # Zaad 1: het bord, verdeeld over de hoeken (elke hoek een eigen deel, en
+    # dagelijks een ander deel voorop), zodat twee hoeken niet hetzelfde oogsten.
+    zaad = []
+    b = VERGELIJK.get("bord") or {}
+    if b.get("src") and b.get("id"):
+        pins, bron = bordpins(b["src"], b["id"], csrf, app)
+        eigen = sorted([p["id"] for p in pins if goed(p)])
+        i = VOLGORDE.index(hoek) if hoek in VOLGORDE else 0
+        n = max(len(VOLGORDE), 1)
+        dag = datetime.now(timezone.utc).toordinal()
+        deel = [pid for j, pid in enumerate(eigen) if (j + dag) % n == i]
+        zaad += deel[:int(VERGELIJK.get("bordzaad_per_hoek", 10))]
+        log("vergelijkfase: bord gaf %d pins (%s), %d productpins na filter, %d als zaad"
+            % (len(pins), bron, len(eigen), len(zaad)))
+    # Zaad 2: de winkelpins uit het zoeken van deze hoek (blijven bij het onderwerp).
+    uit_zoek = [pid for pid, p in alles.items()
+                if p.get("via") == "zoekterm" and goed(p)]
+    random.shuffle(uit_zoek)
+    zaad += uit_zoek[:int(VERGELIJK.get("zoekzaad_per_hoek", 15))]
+    voor, verz, leeg, gezien = len(alles), 0, 0, set(zaad)
+    laag_zaad = zaad
+    for laag in range(1, lagen + 1):
+        volgende = []
+        for pid in laag_zaad:
+            if verz >= max_verz or time.time() - START > grens or tijd_op():
+                break
+            buren = vergelijk(pid, csrf, app)
+            verz += 1
+            if not buren:
+                leeg += 1
+            for k in buren:
+                if k["id"] in gezien:
+                    continue
+                gezien.add(k["id"])
+                if not goed(k):
+                    continue
+                if k["id"] not in alles:
+                    alles[k["id"]] = bewaar(k, laag, "vergelijk", "")
+                volgende.append(k["id"])
+            time.sleep(0.6 + random.random() * 0.4)
+        log("  vergelijk laag %d: %d zaad, %d winkelpins door het filter (totaal %d verzoeken)"
+            % (laag, len(laag_zaad), len(volgende), verz))
+        # Breedte boven diepte: de volgende laag krijgt een gemengde greep, niet
+        # alleen de eerste buren van het eerste zaad.
+        random.shuffle(volgende)
+        laag_zaad = volgende
+        if not laag_zaad:
+            break
+    log("vergelijkfase: %d verzoeken (%d leeg), %d nieuwe winkelpins (totaal %d)"
+        % (verz, leeg, len(alles) - voor, len(alles)))
 
 
 def pin_dagen(s):
@@ -567,7 +697,15 @@ def main():
         log("LET OP: de kliks leverden vrijwel niets op. Zoeken werkte wel, dus dit "
             "is geen uitspraak over de markt maar over deze machine.")
 
-    # ---- fase 3: doorklikken via borden, met de tijd die overblijft
+    # ---- fase 3a: 'Meer zoals dit' per productpin (alleen als de config het aanzet)
+    if VERGELIJK.get("aan"):
+        try:
+            vergelijkfase(alles, csrf, app, hoek)
+        except Exception as e:
+            # Een fout hier mag de ronde nooit stoppen: dan meten we wat er al is.
+            log("vergelijkfase afgebroken (%s: %s)" % (type(e).__name__, str(e)[:120]))
+
+    # ---- fase 3b: doorklikken via borden, met de tijd die overblijft
     vooraf = bordfase(alles, vandaag) if BORD_TOT > 0 else {}
 
     # ---- groepeer op product (domein + handle), niet op pin en niet op zoekterm
@@ -661,6 +799,7 @@ def main():
                "titel_pin": beste["titel"], "beschrijving_pin": beste["beschrijving"],
                "created_at": beste.get("created_at"),
                "gevonden_via": ("zoeken" if any(p["via"] == "zoekterm" for p in pins)
+                                else "vergelijk" if any(p["via"] == "vergelijk" for p in pins)
                                 else "bord" if any(p["via"] == "bord" for p in pins)
                                 else "doorklikken"),
                "http": code, "eind_url": eind, "winkel_leeft": leeft}
