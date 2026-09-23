@@ -1,6 +1,7 @@
 """Eenmalige proef: geeft Pinterest 'Meer ideeen' van een bord terug aan een
 datacenter-IP? De bord-ids staan in de prive-werkmap (config/meerideeen.json);
-in het publieke log komen alleen tellingen en HTTP-codes."""
+in het publieke log komen alleen tellingen en HTTP-codes.
+Run 2: met het productbord erbij (10 paginas)."""
 import json, os, re, subprocess, urllib.parse
 
 PRIV = os.environ.get("PRIVAAT", "privaat")
