@@ -205,7 +205,9 @@ def kies(bank, gesch, budget, cooldown):
                                   and t["taal"] != "*"], marktnr + dag)
         onbeproefd += [t for t in kand if score(t["q"], land, t["taal"]) is None
                        and t["taal"] == "*"]
-        rijen.append((m, land, beproefd, onbeproefd))
+        # "gewicht" in de markt-regel: zoveel beurten per ronde. Dezelfde
+        # lijsten, dus een term wordt nooit twee keer gepakt.
+        rijen += [(m, land, beproefd, onbeproefd)] * max(1, int(cfg.get("gewicht", 1)))
 
     # Rotatie over de SOORTEN. Zonder dit kiest elke run binnen een markt de
     # best scorende term, en dat is telkens hetzelfde soort aanbod -- dan komen
