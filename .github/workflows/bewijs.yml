@@ -1,0 +1,138 @@
+name: Adsbewijs
+
+# Na de Oogstronde en de Termenrun: per winkel nakijken op welke producten hij
+# echt adverteert (adsbewijs.py), en daarna het EU-bereik van die ads meten
+# (bereik.py). Zelfde opzet als de andere rondes: code hier (publiek), wachtrij
+# en uitslag in de prive-werkmap, in het publieke log alleen tellingen.
+#
+# Twee jobs, dus twee runners en twee IP-adressen: loopt de eerste tegen de
+# zoekrem aan, dan kan de tweede nog meten.
+#
+# Alleen schedule, push en workflow_dispatch. NOOIT pull_request_target of
+# workflow_run erbij: die geven secrets door aan code van buiten.
+
+on:
+  schedule:
+    # Vier keer per dag. Geplande runs op een gratis repo komen vaak uren te
+    # laat; elke run pakt wat er op dat moment in de wachtrij staat en slaat
+    # over wat al gedaan is, dus een late of dubbele run kost niets.
+    - cron: "15 11 * * *"       # 13:15 NL
+    - cron: "15 14 * * *"       # 16:15 NL
+    - cron: "15 17 * * *"       # 19:15 NL
+    - cron: "15 21 * * *"       # 23:15 NL
+  push:
+    # Een wijziging aan deze stap draait hem meteen een keer, zodat een fout
+    # niet pas bij de volgende geplande run boven water komt.
+    branches: [main]
+    paths:
+      - adsbewijs.py
+      - bereik.py
+      - .github/workflows/bewijs.yml
+  workflow_dispatch:
+    inputs:
+      budget:
+        description: "Hoeveel Meta-calls voor de winkelstap"
+        required: false
+        default: "120"
+      minuten:
+        description: "Tijdsbudget voor de bereikmeting"
+        required: false
+        default: "40"
+
+concurrency:
+  group: adsbewijs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  winkels:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Werkmap ophalen
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PRIVE_REPO }}
+          token: ${{ secrets.PRIVE_TOKEN }}
+          path: privaat
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Browser installeren
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Wachtrij bouwen
+        run: python3 privaat/bewijs_wachtrij.py
+
+      - name: Winkels nakijken
+        timeout-minutes: 35
+        env:
+          PRIVAAT: privaat
+          BUDGET: ${{ github.event.inputs.budget || '120' }}
+        run: python3 adsbewijs.py
+
+      - name: Uitslag wegschrijven
+        if: always()
+        run: |
+          git -C privaat config user.name "oogst-bot"
+          git -C privaat config user.email "actions@github.com"
+          git -C privaat add ads/adsbewijs.json ads/metingen.json ads/bewijs_wachtrij.json || true
+          if git -C privaat diff --staged --quiet; then
+            echo "Niets nieuws om te committen."
+          else
+            git -C privaat commit -q -m "Adsbewijs $(date -u '+%Y-%m-%d %H:%M') UTC"
+            git -C privaat pull -q --rebase
+            git -C privaat push -q
+          fi
+
+  bereik:
+    needs: winkels
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Werkmap ophalen
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.PRIVE_REPO }}
+          token: ${{ secrets.PRIVE_TOKEN }}
+          path: privaat
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Browser installeren
+        run: |
+          python -m pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Bereik meten
+        env:
+          PRIVAAT: privaat
+          MINUTEN: ${{ github.event.inputs.minuten || '40' }}
+        run: python3 bereik.py
+
+      - name: Uitslag wegschrijven
+        if: always()
+        run: |
+          git -C privaat config user.name "oogst-bot"
+          git -C privaat config user.email "actions@github.com"
+          git -C privaat add ads/metingen.json || true
+          if git -C privaat diff --staged --quiet; then
+            echo "Niets nieuws om te committen."
+          else
+            git -C privaat commit -q -m "Bereik $(date -u '+%Y-%m-%d %H:%M') UTC"
+            git -C privaat pull -q --rebase
+            git -C privaat push -q
+          fi
