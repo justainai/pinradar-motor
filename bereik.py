@@ -21,7 +21,11 @@ zonder verschil valt er niets om te rekenen. Om de drie zulke ads een ad zonder
 meetpunt, zodat nieuwe ads ook aan hun eerste punt komen. (Tot 07-10 gingen de
 nieuwe voorop; de winkelstap zet er per run meer bij dan hier gemeten worden,
 dus kwam geen enkele ad aan een tweede punt.) Een ad wordt MAX_DAGEN lang
-gevolgd na zijn eerste punt. Een ad die twee keer niets gaf terwijl de ijk-ad
+gevolgd na zijn eerste punt. Binnen beide groepen gaan jonge ads voor (korter
+dan JONG_DAGEN live): de vraag is wat er nu getest wordt en waar het geld heen
+gaat, niet wat al maanden draait. Een oude ad die zijn tweede punt al heeft
+wordt daarna nog maar eens per drie rusttijden gemeten, zodat hij geen
+meettijd van de jonge afpakt. Een ad die twee keer niets gaf terwijl de ijk-ad
 wel antwoordde draait buiten de EU en wordt niet meer gevraagd.
 
 DE IJK. Geven drie ads op rij niets, dan vraagt hij een ad op die eerder wel
@@ -29,7 +33,7 @@ een cijfer gaf. Geeft die ook niets, dan zit de Ads Library dicht: hij stopt
 en telt de laatste missers niet mee. Zonder die controle sla je een dichte
 deur op als 'geen bereik'.
 
-Env: PRIVAAT, MINUTEN (tijdsbudget), MAX_DAGEN, RUST_UUR.
+Env: PRIVAAT, MINUTEN (tijdsbudget), MAX_DAGEN, RUST_UUR, JONG_DAGEN.
 """
 import json
 import os
@@ -44,6 +48,7 @@ METINGEN = os.path.join(PRIV, "ads", "metingen.json")
 MINUTEN = float(os.environ.get("MINUTEN", "40"))
 MAX_DAGEN = float(os.environ.get("MAX_DAGEN", "8"))
 RUST_UUR = float(os.environ.get("RUST_UUR", "20"))
+JONG_DAGEN = float(os.environ.get("JONG_DAGEN", "21"))
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
@@ -108,18 +113,22 @@ def main():
         p = v.get("punten") or []
         if v.get("mis", 0) >= 2 and not p:
             continue                                   # buiten de EU
+        oud = nu - (v.get("start") or 0) > JONG_DAGEN * 86400
+        rust = RUST_UUR * (3 if oud and len(p) >= 2 else 1)
         if not p:
-            nieuw.append(i)
-        elif nu - p[0]["t"] <= MAX_DAGEN * 86400 and nu - p[-1]["t"] >= RUST_UUR * 3600:
-            opnieuw.append((p[-1]["t"], i))
-    opnieuw = [i for _, i in sorted(opnieuw)]
+            nieuw.append((oud, -(v.get("start") or 0), i))
+        elif nu - p[0]["t"] <= MAX_DAGEN * 86400 and nu - p[-1]["t"] >= rust * 3600:
+            opnieuw.append((oud, p[-1]["t"], i))
+    jong_n = sum(1 for o in opnieuw + nieuw if not o[0])
+    opnieuw = [o[-1] for o in sorted(opnieuw)]
+    nieuw = [o[-1] for o in sorted(nieuw)]
     todo = []
     while opnieuw or nieuw:
         todo += opnieuw[:3] + nieuw[:1]
         opnieuw, nieuw = opnieuw[3:], nieuw[1:]
     ijk = next((i for i, v in M.items() if v.get("punten")), None)
-    print("meetlijst %d | nu te meten %d (waarvan %d opnieuw) | tijdsbudget %d min"
-          % (len(M), len(todo), sum(1 for i in todo if M[i].get("punten")), MINUTEN))
+    print("meetlijst %d | nu te meten %d (waarvan %d opnieuw, %d jonge ads) | tijdsbudget %d min"
+          % (len(M), len(todo), sum(1 for i in todo if M[i].get("punten")), jong_n, MINUTEN))
     if not todo:
         return 0
 

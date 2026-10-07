@@ -25,10 +25,21 @@ DE REM herken je aan count > 0 met 0 ads. Drie keer op rij en hij stopt; wat
 niet gedaan is blijft in de wachtrij.
 
 Per geadverteerd product haalt hij <handle>.js bij de winkel zelf op (titel,
-prijs, foto). Dat kost geen Meta-budget. De grootste ad van elk product met
-MIN_CR of meer creatives gaat naar ads/metingen.json, waar bereik.py hem meet.
+prijs, foto). Dat kost geen Meta-budget.
 
-Env: PRIVAAT, BUDGET (Meta-calls), MIN_CR.
+NIEUW EERST (07-10). De grootste ads van een winkel zijn bijna altijd oude
+winnaars: van de eerste 731 ads op de meetlijst was 77% ouder dan een maand.
+De vraag is juist wat er nu getest wordt en waar het geld heen gaat. Daarom:
+- heeft een winkel meer ads dan de eerste call laat zien, dan volgt een tweede
+  call met de nieuwste ads voorop;
+- van een product waarvan de jongste ad korter dan JONG_DAGEN loopt gaat die
+  jongste ad naar ads/metingen.json (vanaf 2 creatives, hooguit MAX_JONG per
+  winkel per bezoek), gemerkt met "jong";
+  van de andere producten de grootste ad, vanaf MIN_CR creatives;
+- een winkel die opnieuw in de wachtrij staat ("opnieuw") wordt opnieuw
+  nagekeken; een product dat er de vorige keer niet stond krijgt "sinds".
+
+Env: PRIVAAT, BUDGET (Meta-calls), MIN_CR, JONG_DAGEN.
 """
 import asyncio
 import json
@@ -48,9 +59,14 @@ MAP = os.path.join(PRIV, "ads")
 WACHTRIJ = os.path.join(MAP, "bewijs_wachtrij.json")
 UIT = os.path.join(MAP, "adsbewijs.json")
 METINGEN = os.path.join(MAP, "metingen.json")
-BUDGET = int(os.environ.get("BUDGET", "120"))
+BUDGET = int(os.environ.get("BUDGET", "180"))
 MIN_CR = int(os.environ.get("MIN_CR", "3"))
+JONG_DAGEN = float(os.environ.get("JONG_DAGEN", "21"))
 MAX_DETAIL = 12      # productpagina's per winkel
+MAX_JONG = 4         # jonge ads per winkel per bezoek naar de meetlijst; een catalogus-
+                     # adverteerder (kleding: tientallen nieuwe ads per week) vult hem anders alleen
+# Deze sortering geeft de nieuwste ads van een pagina eerst (gemeten 30-09).
+NIEUWSTE = "&sort_data[mode]=relevancy_monthly_grouped&sort_data[direction]=desc"
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
@@ -128,11 +144,12 @@ def per_product(ads):
         rij = [a for _, a in g["ads"]]
         top = min(g["ads"], key=lambda x: x[0])[1]
         starts = [a["start"] for a in rij if a["start"]]
+        jongste = max(rij, key=lambda a: a["start"] or 0)
         uit.append({
             "handle": g["handle"], "host": g["host"], "n": len(rij), "cr": sum(a["cc"] for a in rij),
             "video": sum(a["video"] for a in rij), "jong": max(starts) if starts else None,
             "oud": min(starts) if starts else None, "top": top["id"], "top_start": top["start"],
-            "titel_ad": top["titel"],
+            "titel_ad": top["titel"], "nieuw": jongste["id"], "nieuw_start": jongste["start"],
         })
     uit.sort(key=lambda p: -p["cr"])
     return uit
@@ -157,13 +174,17 @@ async def main():
     rij = laad(WACHTRIJ, [])
     klaar = laad(UIT, {})
     metingen = laad(METINGEN, {})
-    todo = [w for w in rij if kaal(w.get("dom")) not in klaar]
+    todo = [w for w in rij if w.get("opnieuw") or kaal(w.get("dom")) not in klaar]
     print("wachtrij %d | al gedaan %d | te doen %d | budget %d calls" % (len(rij), len(rij) - len(todo), len(todo), BUDGET))
     if not todo:
         return 0
 
-    calls = leeg = gedaan = geen = nieuw_meet = 0
+    calls = leeg = gedaan = geen = nieuw_meet = jong_meet = tweede = opnieuw = 0
     nu = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    jong_grens = time.time() - JONG_DAGEN * 86400
+
+    def jong(p):
+        return (p["nieuw_start"] or 0) >= jong_grens
     async with async_playwright() as pw:
         b = await pw.chromium.launch(headless=True)
         ctx = await b.new_context(user_agent=UA, locale="nl-NL")
@@ -214,13 +235,49 @@ async def main():
                 leeg += 1
                 continue
             leeg = 0
-            prod = per_product(r["ads"])
+            ads = r["ads"]
+            if (r["count"] or 0) > len(ads) and calls < BUDGET:
+                # Meer ads dan zichtbaar: haal ook de nieuwste op. Geeft die sortering
+                # niets terug, dan blijft het bij de grootste.
+                r2 = None
+                try:
+                    r2 = await page.evaluate(HAAL, BASIS + "&search_type=page&view_all_page_id=" + str(pid) + NIEUWSTE)
+                except Exception:
+                    pass
+                calls += 1
+                await page.wait_for_timeout(900)
+                if r2 and r2.get("gevonden") and r2["ads"]:
+                    al = set(a["id"] for a in ads)
+                    ads = ads + [a for a in r2["ads"] if a["id"] not in al]
+                    tweede += 1
+            prod = per_product(ads)
+            vorige = klaar.get(dom) or {}
+            if vorige.get("producten"):
+                opnieuw += 1
+            # "sinds" alleen als het vorige bezoek ook al de nieuwste ads ophaalde; anders
+            # is een product niet nieuw maar alleen voor het eerst zichtbaar.
+            if any("nieuw" in p for p in vorige.get("producten") or []):
+                eerder = set(p["handle"] for p in vorige["producten"])
+                for p in prod:
+                    if p["handle"] not in eerder:
+                        p["sinds"] = nu          # stond er bij het vorige bezoek niet
+            keus = sorted([p for p in prod if p["cr"] >= 2], key=lambda p: (not jong(p), -p["cr"]))
             with ThreadPoolExecutor(6) as ex:
-                kop = list(ex.map(detail, [p for p in prod if p["cr"] >= 2][:MAX_DETAIL]))
+                kop = list(ex.map(detail, keus[:MAX_DETAIL]))
             klaar[dom] = {"wanneer": nu, "bron": w.get("bron", ""), "pid": str(pid), "actief": r["count"] or 0,
-                          "gezien": len(r["ads"]), "producten": prod}
+                          "gezien": len(ads), "producten": prod}
+            if vorige.get("wanneer"):
+                klaar[dom]["eerst"] = vorige.get("eerst") or vorige["wanneer"]
+            erbij = 0
             for p in kop:
-                if p["cr"] >= MIN_CR and p["top"] not in metingen:
+                if jong(p):
+                    if p["nieuw"] not in metingen and erbij < MAX_JONG:
+                        erbij += 1
+                        metingen[p["nieuw"]] = {"dom": dom, "handle": p["handle"], "start": p["nieuw_start"],
+                                                "punten": [], "jong": True}
+                        nieuw_meet += 1
+                        jong_meet += 1
+                elif p["cr"] >= MIN_CR and p["top"] not in metingen:
                     metingen[p["top"]] = {"dom": dom, "handle": p["handle"], "start": p["top_start"], "punten": []}
                     nieuw_meet += 1
             gedaan += 1
@@ -228,11 +285,11 @@ async def main():
             bewaar(METINGEN, metingen)
         await b.close()
 
-    print("calls %d | winkels met antwoord %d | domein zonder ad %d | rem %s"
-          % (calls, gedaan, geen, "DICHT" if leeg >= 3 else "open"))
+    print("calls %d | winkels met antwoord %d (opnieuw bezocht %d, ook nieuwste ads %d) | domein zonder ad %d | rem %s"
+          % (calls, gedaan, opnieuw, tweede, geen, "DICHT" if leeg >= 3 else "open"))
     alle = [p for w in klaar.values() for p in w.get("producten", [])]
-    print("producten met een ad (totaal in de werkmap) %d | waarvan %d+ creatives %d | nieuw op de meetlijst %d"
-          % (len(alle), MIN_CR, sum(1 for p in alle if p["cr"] >= MIN_CR), nieuw_meet))
+    print("producten met een ad (totaal in de werkmap) %d | waarvan %d+ creatives %d | nieuw op de meetlijst %d (jonge ads %d)"
+          % (len(alle), MIN_CR, sum(1 for p in alle if p["cr"] >= MIN_CR), nieuw_meet, jong_meet))
     return 0
 
 
