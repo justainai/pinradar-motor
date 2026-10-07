@@ -15,10 +15,14 @@ HOE. Het cijfer staat niet in de zoekrespons. Het zit achter twee klikken in
 het detailvenster van een ad, ongeveer 16 seconden per ad. Gemeten vanaf een
 runner (Bereikproef, 06-10): 12 van 12 ads gaven hetzelfde getal als thuis.
 
-VOLGORDE. Eerst ads zonder meetpunt, dan de ads waarvan het laatste punt het
-oudst is. Een ad wordt MAX_DAGEN lang gevolgd na zijn eerste punt. Een ad die
-twee keer niets gaf terwijl de ijk-ad wel antwoordde draait buiten de EU en
-wordt niet meer gevraagd.
+VOLGORDE. Eerst de ads die al een meetpunt hebben en waarvan de rusttijd om
+is, het oudste laatste punt voorop: pas een tweede punt geeft een verschil, en
+zonder verschil valt er niets om te rekenen. Om de drie zulke ads een ad zonder
+meetpunt, zodat nieuwe ads ook aan hun eerste punt komen. (Tot 07-10 gingen de
+nieuwe voorop; de winkelstap zet er per run meer bij dan hier gemeten worden,
+dus kwam geen enkele ad aan een tweede punt.) Een ad wordt MAX_DAGEN lang
+gevolgd na zijn eerste punt. Een ad die twee keer niets gaf terwijl de ijk-ad
+wel antwoordde draait buiten de EU en wordt niet meer gevraagd.
 
 DE IJK. Geven drie ads op rij niets, dan vraagt hij een ad op die eerder wel
 een cijfer gaf. Geeft die ook niets, dan zit de Ads Library dicht: hij stopt
@@ -99,18 +103,23 @@ def main():
         return 0
 
     nu = time.time()
-    todo = []
+    opnieuw, nieuw = [], []
     for i, v in M.items():
         p = v.get("punten") or []
         if v.get("mis", 0) >= 2 and not p:
             continue                                   # buiten de EU
         if not p:
-            todo.append((0, i))
+            nieuw.append(i)
         elif nu - p[0]["t"] <= MAX_DAGEN * 86400 and nu - p[-1]["t"] >= RUST_UUR * 3600:
-            todo.append((p[-1]["t"], i))
-    todo = [i for _, i in sorted(todo)]
+            opnieuw.append((p[-1]["t"], i))
+    opnieuw = [i for _, i in sorted(opnieuw)]
+    todo = []
+    while opnieuw or nieuw:
+        todo += opnieuw[:3] + nieuw[:1]
+        opnieuw, nieuw = opnieuw[3:], nieuw[1:]
     ijk = next((i for i, v in M.items() if v.get("punten")), None)
-    print("meetlijst %d | nu te meten %d | tijdsbudget %d min" % (len(M), len(todo), MINUTEN))
+    print("meetlijst %d | nu te meten %d (waarvan %d opnieuw) | tijdsbudget %d min"
+          % (len(M), len(todo), sum(1 for i in todo if M[i].get("punten")), MINUTEN))
     if not todo:
         return 0
 
