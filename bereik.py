@@ -15,25 +15,30 @@ HOE. Het cijfer staat niet in de zoekrespons. Het zit achter twee klikken in
 het detailvenster van een ad, ongeveer 16 seconden per ad. Gemeten vanaf een
 runner (Bereikproef, 06-10): 12 van 12 ads gaven hetzelfde getal als thuis.
 
-VOLGORDE. Eerst de ads die al een meetpunt hebben en waarvan de rusttijd om
-is, het oudste laatste punt voorop: pas een tweede punt geeft een verschil, en
-zonder verschil valt er niets om te rekenen. Om de drie zulke ads een ad zonder
-meetpunt, zodat nieuwe ads ook aan hun eerste punt komen. (Tot 07-10 gingen de
-nieuwe voorop; de winkelstap zet er per run meer bij dan hier gemeten worden,
-dus kwam geen enkele ad aan een tweede punt.) Een ad wordt MAX_DAGEN lang
-gevolgd na zijn eerste punt. Binnen beide groepen gaan jonge ads voor (korter
-dan JONG_DAGEN live): de vraag is wat er nu getest wordt en waar het geld heen
-gaat, niet wat al maanden draait. Een oude ad die zijn tweede punt al heeft
-wordt daarna nog maar eens per drie rusttijden gemeten, zodat hij geen
-meettijd van de jonge afpakt. Een ad die twee keer niets gaf terwijl de ijk-ad
-wel antwoordde draait buiten de EU en wordt niet meer gevraagd.
+VOLGORDE. Drie rijen, om en om gemeten in het patroon tweede, nieuw, tweede,
+nieuw, volgen:
+- tweede: ads met precies een meetpunt waarvan de rusttijd om is. Pas een
+  tweede punt geeft een verschil, en zonder verschil valt er niets om te
+  rekenen.
+- nieuw: ads zonder meetpunt, de laatst gestarte voorop.
+- volgen: ads die al twee of meer punten hebben.
+Binnen elke rij gaan jonge ads voor (korter dan JONG_DAGEN live): de vraag is
+wat er nu getest wordt, niet wat al maanden draait. (Tot 07-10 gingen de nieuwe
+voorop en kwam geen enkele ad aan een tweede punt; tot 10-10 gingen drie
+hermetingen op een nieuwe, en bleven 573 jonge ads zonder enig punt liggen
+terwijl dezelfde ads een derde en vierde keer gemeten werden.) Een ad die na
+twee punten minder dan GROEI_MIN bereik per dag wint heeft zijn antwoord al:
+die wordt nog maar eens per drie rusttijden gemeten, wat groeit elke rusttijd.
+Een ad wordt MAX_DAGEN lang gevolgd na zijn eerste punt. Een ad die twee keer
+niets gaf terwijl de ijk-ad wel antwoordde draait buiten de EU en wordt niet
+meer gevraagd.
 
 DE IJK. Geven drie ads op rij niets, dan vraagt hij een ad op die eerder wel
 een cijfer gaf. Geeft die ook niets, dan zit de Ads Library dicht: hij stopt
 en telt de laatste missers niet mee. Zonder die controle sla je een dichte
 deur op als 'geen bereik'.
 
-Env: PRIVAAT, MINUTEN (tijdsbudget), MAX_DAGEN, RUST_UUR, JONG_DAGEN.
+Env: PRIVAAT, MINUTEN (tijdsbudget), MAX_DAGEN, RUST_UUR, JONG_DAGEN, GROEI_MIN.
 """
 import json
 import os
@@ -45,10 +50,11 @@ from playwright.sync_api import sync_playwright
 
 PRIV = os.environ.get("PRIVAAT", "privaat")
 METINGEN = os.path.join(PRIV, "ads", "metingen.json")
-MINUTEN = float(os.environ.get("MINUTEN", "40"))
+MINUTEN = float(os.environ.get("MINUTEN", "90"))
 MAX_DAGEN = float(os.environ.get("MAX_DAGEN", "8"))
 RUST_UUR = float(os.environ.get("RUST_UUR", "20"))
 JONG_DAGEN = float(os.environ.get("JONG_DAGEN", "21"))
+GROEI_MIN = float(os.environ.get("GROEI_MIN", "1500"))
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
@@ -99,6 +105,37 @@ def meet(page, ad_id):
     return int(cijfers) if cijfers else None
 
 
+def volgorde(M, nu):
+    """Welke ads nu gemeten worden, in volgorde; plus hoeveel daarvan jong zijn."""
+    tweede, nieuw, volgen = [], [], []
+    for i, v in M.items():
+        p = v.get("punten") or []
+        if v.get("mis", 0) >= 2 and not p:
+            continue                                   # buiten de EU
+        oud = nu - (v.get("start") or 0) > JONG_DAGEN * 86400
+        if not p:
+            nieuw.append((oud, -(v.get("start") or 0), i))
+            continue
+        if nu - p[0]["t"] > MAX_DAGEN * 86400:
+            continue
+        if len(p) == 1:
+            if nu - p[-1]["t"] >= RUST_UUR * 3600:
+                tweede.append((oud, p[-1]["t"], i))
+            continue
+        per_dag = (p[-1]["bereik"] - p[-2]["bereik"]) / max(p[-1]["t"] - p[-2]["t"], 3600) * 86400
+        groeit = per_dag >= GROEI_MIN
+        if nu - p[-1]["t"] >= RUST_UUR * (1 if groeit else 3) * 3600:
+            volgen.append((not groeit, oud, p[-1]["t"], i))
+    jong_n = sum(1 for o in tweede + nieuw if not o[0]) + sum(1 for o in volgen if not o[1])
+    rijen = [[o[-1] for o in sorted(r)] for r in (tweede, nieuw, volgen)]
+    todo = []
+    while any(rijen):
+        for r in (0, 1, 0, 1, 2):
+            if rijen[r]:
+                todo.append(rijen[r].pop(0))
+    return todo, jong_n
+
+
 def main():
     try:
         with open(METINGEN, encoding="utf-8") as f:
@@ -108,24 +145,7 @@ def main():
         return 0
 
     nu = time.time()
-    opnieuw, nieuw = [], []
-    for i, v in M.items():
-        p = v.get("punten") or []
-        if v.get("mis", 0) >= 2 and not p:
-            continue                                   # buiten de EU
-        oud = nu - (v.get("start") or 0) > JONG_DAGEN * 86400
-        rust = RUST_UUR * (3 if oud and len(p) >= 2 else 1)
-        if not p:
-            nieuw.append((oud, -(v.get("start") or 0), i))
-        elif nu - p[0]["t"] <= MAX_DAGEN * 86400 and nu - p[-1]["t"] >= rust * 3600:
-            opnieuw.append((oud, p[-1]["t"], i))
-    jong_n = sum(1 for o in opnieuw + nieuw if not o[0])
-    opnieuw = [o[-1] for o in sorted(opnieuw)]
-    nieuw = [o[-1] for o in sorted(nieuw)]
-    todo = []
-    while opnieuw or nieuw:
-        todo += opnieuw[:3] + nieuw[:1]
-        opnieuw, nieuw = opnieuw[3:], nieuw[1:]
+    todo, jong_n = volgorde(M, nu)
     ijk = next((i for i, v in M.items() if v.get("punten")), None)
     print("meetlijst %d | nu te meten %d (waarvan %d opnieuw, %d jonge ads) | tijdsbudget %d min"
           % (len(M), len(todo), sum(1 for i in todo if M[i].get("punten")), jong_n, MINUTEN))

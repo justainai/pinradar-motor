@@ -37,7 +37,7 @@ on:
       minuten:
         description: "Tijdsbudget voor de bereikmeting"
         required: false
-        default: "40"
+        default: "90"
 
 concurrency:
   group: adsbewijs
@@ -97,7 +97,7 @@ jobs:
     needs: winkels
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
 
@@ -120,7 +120,7 @@ jobs:
       - name: Bereik meten
         env:
           PRIVAAT: privaat
-          MINUTEN: ${{ github.event.inputs.minuten || '40' }}
+          MINUTEN: ${{ github.event.inputs.minuten || '90' }}
         run: python3 bereik.py
 
       - name: Uitslag wegschrijven
