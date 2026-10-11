@@ -117,6 +117,12 @@ jobs:
           python -m pip install --quiet playwright
           python -m playwright install --with-deps chromium
 
+      # De werkmap mag zelf ads afmelden (veld "uit") voordat er gemeten wordt.
+      # Wat daar de regels zijn staat alleen daar.
+      - name: Meetlijst schiften
+        run: |
+          if [ -f privaat/meetlijst_schift.py ]; then python3 privaat/meetlijst_schift.py; fi
+
       - name: Bereik meten
         env:
           PRIVAAT: privaat

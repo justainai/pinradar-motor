@@ -31,7 +31,9 @@ twee punten minder dan GROEI_MIN bereik per dag wint heeft zijn antwoord al:
 die wordt nog maar eens per drie rusttijden gemeten, wat groeit elke rusttijd.
 Een ad wordt MAX_DAGEN lang gevolgd na zijn eerste punt. Een ad die twee keer
 niets gaf terwijl de ijk-ad wel antwoordde draait buiten de EU en wordt niet
-meer gevraagd.
+meer gevraagd. Een ad met het veld "uit" wordt overgeslagen: de prive-werkmap
+zet dat veld zelf, voor wat daar niet meer gevolgd hoeft te worden. Zo gaat de
+meettijd naar wat nog niet bekend is.
 
 DE IJK. Geven drie ads op rij niets, dan vraagt hij een ad op die eerder wel
 een cijfer gaf. Geeft die ook niets, dan zit de Ads Library dicht: hij stopt
@@ -110,6 +112,8 @@ def volgorde(M, nu):
     tweede, nieuw, volgen = [], [], []
     for i, v in M.items():
         p = v.get("punten") or []
+        if v.get("uit"):
+            continue                                   # in de werkmap afgemeld
         if v.get("mis", 0) >= 2 and not p:
             continue                                   # buiten de EU
         oud = nu - (v.get("start") or 0) > JONG_DAGEN * 86400
@@ -147,8 +151,9 @@ def main():
     nu = time.time()
     todo, jong_n = volgorde(M, nu)
     ijk = next((i for i, v in M.items() if v.get("punten")), None)
-    print("meetlijst %d | nu te meten %d (waarvan %d opnieuw, %d jonge ads) | tijdsbudget %d min"
-          % (len(M), len(todo), sum(1 for i in todo if M[i].get("punten")), jong_n, MINUTEN))
+    print("meetlijst %d (afgemeld %d) | nu te meten %d (waarvan %d opnieuw, %d jonge ads) | tijdsbudget %d min"
+          % (len(M), sum(1 for v in M.values() if v.get("uit")), len(todo),
+             sum(1 for i in todo if M[i].get("punten")), jong_n, MINUTEN))
     if not todo:
         return 0
 

@@ -9,7 +9,10 @@ name: Oogstronde
 # workflow_run erbij zetten: die geven secrets door aan code van buiten.
 
 on:
-  schedule:
+  # GEPAUZEERD sinds 11-10: de geplande rondes staan uit, de knop (workflow_dispatch)
+  # werkt nog. Weer aanzetten = de regel "schedule:" en de vier cron-regels hieronder
+  # terugzetten (het # ervoor weghalen).
+  # schedule:
     # VIER afspraken, niet een. Gemeten over vier runs: een druk-op-de-knop start
     # binnen seconden, maar de enige geplande run kwam 5 uur en 1 minuut te laat
     # (06:07 gepland, 11:08 aangemaakt) -- dezelfde vertraging als de vijf crons
@@ -24,10 +27,10 @@ on:
     #
     # Elke dag, ook in het weekend: sinds de bordfase (11-09) is de oogst niet
     # meer na een dag op, dus een weekend overslaan kost twee dagen vondsten.
-    - cron: "7 1 * * *"        # 03:07 NL — vroegste kans
-    - cron: "7 3 * * *"        # 05:07 NL
-    - cron: "7 5 * * *"        # 07:07 NL
-    - cron: "7 6 * * *"        # 08:07 NL — de oorspronkelijke
+    # - cron: "7 1 * * *"        # 03:07 NL — vroegste kans
+    # - cron: "7 3 * * *"        # 05:07 NL
+    # - cron: "7 5 * * *"        # 07:07 NL
+    # - cron: "7 6 * * *"        # 08:07 NL — de oorspronkelijke
   workflow_dispatch:
     inputs:
       minuten:
