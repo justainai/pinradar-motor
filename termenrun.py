@@ -32,7 +32,17 @@ budget staat standaard op 40. De rem herken je aan count > 0 met 0 edges;
 daar stopt hij en onthoudt waar hij was. Deze runner heeft bovendien een
 ander IP dan Justins laptop, dus de twee eten niet van hetzelfde budget.
 
-Env: PRIVAAT (pad naar de werkmap), BUDGET, COOLDOWN.
+NIEUWSTE EERST (gemeten 11-10). Zonder sortering geeft een zoekterm de grootste
+ads terug: mediaan 200 tot 340 dagen oud, en na een paar weken bijna alleen nog
+winkels die al bekend zijn (van 5 tot 7 nieuwe winkels per call naar 0,9). Met
+de sortering die de nieuwste ads voorop zet gaf dezelfde term ads van vandaag,
+nul overlap met de gewone lijst, en bijna alleen onbekende winkels (11 van 16,
+6 van 6, 10 van 10). Dat is de vraag die telt: wat wordt er NU getest. Daarom
+staat NIEUWSTE standaard aan. Zo'n call heeft een eigen regel in de
+geschiedenis (sleutel eindigt op |n) en mag na een dag opnieuw: morgen staan er
+andere ads bovenaan.
+
+Env: PRIVAAT (pad naar de werkmap), BUDGET, COOLDOWN, NIEUWSTE (1 of 0).
 """
 import asyncio
 import json
@@ -51,7 +61,14 @@ BEKEND = os.path.join(MAP, "bekend.json")
 GESCH = os.path.join(MAP, "termgeschiedenis.json")
 WINKELS = os.path.join(MAP, "winkels_nieuw.json")
 BUDGET = int(os.environ.get("BUDGET", "40"))
-COOLDOWN = int(os.environ.get("COOLDOWN", "7"))
+NIEUWSTE = os.environ.get("NIEUWSTE", "1") == "1"
+COOLDOWN = int(os.environ.get("COOLDOWN", "1" if NIEUWSTE else "7"))
+SORTERING = "&sort_data[mode]=relevancy_monthly_grouped&sort_data[direction]=desc" if NIEUWSTE else ""
+
+
+def sleutel(q, land):
+    """Regel in de geschiedenis; de nieuwste-eerst-calls tellen apart."""
+    return "%s|%s%s" % (q, land, "|n" if NIEUWSTE else "")
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/128.0 Safari/537.36")
@@ -158,7 +175,7 @@ def kies(bank, gesch, budget, cooldown):
         per_taal.setdefault(t["taal"], []).append(t)
 
     def rust(q, land):
-        r = gesch.get("%s|%s" % (q, land))
+        r = gesch.get(sleutel(q, land))
         if not r:
             return True
         return nu - datetime.fromisoformat(r["op"]) >= timedelta(days=cooldown)
@@ -171,9 +188,11 @@ def kies(bank, gesch, budget, cooldown):
         telt hij afgezwakt mee. Onbeproefd geeft None -- die komen aan bod in
         de ontdek-beurten.
         """
-        r = gesch.get("%s|%s" % (q, land))
+        r = gesch.get(sleutel(q, land))
         if r:
-            return r.get("nieuw", 0)
+            # Nieuwste-eerst geeft ook veel dat geen winkel is (apps, folders,
+            # leesfuik). Daar telt alleen een nieuwe winkel met een productlink.
+            return r.get("product", r.get("nieuw", 0))
         b = next((t.get("gemeten") for t in bank["termen"]
                   if t["q"] == q and t.get("gemeten")), None)
         if not b or b.get("nieuw") is None:
@@ -248,7 +267,7 @@ def kies(bank, gesch, budget, cooldown):
 def url(q, land):
     return ("https://www.facebook.com/ads/library/?active_status=active&ad_type=all"
             "&country=" + land + "&search_type=keyword_exact_phrase&media_type=all"
-            "&q=" + quote(q))
+            "&q=" + quote(q) + SORTERING)
 
 
 async def main():
@@ -301,13 +320,15 @@ async def main():
                 rem = True
                 break
 
-            nieuw_hier = 0
+            nieuw_hier = prod_hier = 0
             for a in r["ads"]:
                 d = domein_van(a)
                 if not d or d in ken:
                     continue
                 ken.add(d)
                 nieuw_hier += 1
+                if "/products/" in (a["link"] or ""):
+                    prod_hier += 1
                 winkels[d] = {
                     "pid": a["pid"], "pagina": a["pagina"], "categorie": a["cats"],
                     "likes": a["likes"], "cta": a["cta"], "vorm": a["vorm"],
@@ -318,9 +339,9 @@ async def main():
                 }
             alle = {domein_van(a) for a in r["ads"]}
             alle.discard("")
-            gesch["%s|%s" % (p["q"], p["land"])] = {
+            gesch[sleutel(p["q"], p["land"])] = {
                 "op": nu, "count": r["count"], "ads": len(r["ads"]),
-                "domeinen": len(alle), "nieuw": nieuw_hier,
+                "domeinen": len(alle), "nieuw": nieuw_hier, "product": prod_hier,
             }
             tot_nieuw += nieuw_hier
             # Publiek log: tellingen, geen zoekterm en geen winkelnaam.

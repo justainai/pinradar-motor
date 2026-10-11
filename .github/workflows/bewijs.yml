@@ -13,13 +13,15 @@ name: Adsbewijs
 
 on:
   schedule:
-    # Vier keer per dag. Geplande runs op een gratis repo komen vaak uren te
+    # Zes keer per dag. Geplande runs op een gratis repo komen vaak uren te
     # laat; elke run pakt wat er op dat moment in de wachtrij staat en slaat
     # over wat al gedaan is, dus een late of dubbele run kost niets.
+    - cron: "15 8 * * *"        # 10:15 NL
     - cron: "15 11 * * *"       # 13:15 NL
     - cron: "15 14 * * *"       # 16:15 NL
     - cron: "15 17 * * *"       # 19:15 NL
     - cron: "15 21 * * *"       # 23:15 NL
+    - cron: "15 1 * * *"        # 03:15 NL
   push:
     # Een wijziging aan deze stap draait hem meteen een keer, zodat een fout
     # niet pas bij de volgende geplande run boven water komt.

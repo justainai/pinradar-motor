@@ -151,8 +151,9 @@ def main():
     top = sorted(uitslagen, key=lambda x: -x[1]["rang"])[:10]
     print("\nbeste tien voor de winkelkeuring (rang, producten, mediaanprijs):")
     for d, u in top:
-        print("   %-2d %-34s %4s prod  mediaan %-8s %s"
-              % (u["rang"], d[:34], u.get("producten"), u.get("prijs_mediaan"),
+        # Publiek log: geen winkelnaam, alleen de kenmerken.
+        print("   %-2d %4s prod  mediaan %-8s %s"
+              % (u["rang"], u.get("producten"), u.get("prijs_mediaan"),
                  "; ".join(u["let_op"])))
     return 0
 
