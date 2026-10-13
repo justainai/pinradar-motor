@@ -13,15 +13,21 @@ name: Adsbewijs
 
 on:
   schedule:
-    # Zes keer per dag. Geplande runs op een gratis repo komen vaak uren te
-    # laat; elke run pakt wat er op dat moment in de wachtrij staat en slaat
-    # over wat al gedaan is, dus een late of dubbele run kost niets.
-    - cron: "15 8 * * *"        # 10:15 NL
-    - cron: "15 11 * * *"       # 13:15 NL
-    - cron: "15 14 * * *"       # 16:15 NL
-    - cron: "15 17 * * *"       # 19:15 NL
-    - cron: "15 21 * * *"       # 23:15 NL
-    - cron: "15 1 * * *"        # 03:15 NL
+    # Tien keer per dag, om de 2 uur en 24 minuten: een run duurt ruim twee uur
+    # (winkels nakijken, daarna 90 minuten bereik meten) en de runs lopen na
+    # elkaar. Geplande runs op een gratis repo komen vaak uren te laat; elke run
+    # pakt wat er op dat moment in de wachtrij staat en slaat over wat al gedaan
+    # is, dus een late of dubbele run kost niets.
+    - cron: "15 0 * * *"        # 02:15 NL
+    - cron: "40 2 * * *"        # 04:40 NL
+    - cron: "5 5 * * *"         # 07:05 NL
+    - cron: "30 7 * * *"        # 09:30 NL
+    - cron: "55 9 * * *"        # 11:55 NL
+    - cron: "20 12 * * *"       # 14:20 NL
+    - cron: "45 14 * * *"       # 16:45 NL
+    - cron: "10 17 * * *"       # 19:10 NL
+    - cron: "35 19 * * *"       # 21:35 NL
+    - cron: "0 22 * * *"        # 00:00 NL
   push:
     # Een wijziging aan deze stap draait hem meteen een keer, zodat een fout
     # niet pas bij de volgende geplande run boven water komt.
